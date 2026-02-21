@@ -70,9 +70,8 @@ public class CircuitBreakerService {
         }
     }
 
-    /**
-     * Records a successful operation.
-     */
+
+
     private void onSuccess() {
         State currentState = state.get();
 
@@ -89,9 +88,7 @@ public class CircuitBreakerService {
         }
     }
 
-    /**
-     * Records a failed operation.
-     */
+
     private void onFailure() {
         State currentState = state.get();
 
@@ -115,18 +112,14 @@ public class CircuitBreakerService {
         }
     }
 
-    /**
-     * Opens the circuit, rejecting all future requests.
-     */
+
     private void open() {
         state.set(State.OPEN);
         openedAt = Instant.now();
         log.warn("Circuit breaker OPENED at {}", openedAt);
     }
 
-    /**
-     * Resets the circuit to closed state.
-     */
+
     private void reset() {
         state.set(State.CLOSED);
         failureCount.set(0);
@@ -137,9 +130,7 @@ public class CircuitBreakerService {
         log.info("Circuit breaker CLOSED (reset)");
     }
 
-    /**
-     * Checks if enough time has passed to attempt a reset from OPEN to HALF_OPEN.
-     */
+
     private boolean shouldAttemptReset() {
         if (openedAt == null) {
             return false;
@@ -149,16 +140,12 @@ public class CircuitBreakerService {
         return elapsedSeconds >= properties.getWaitDurationInOpenStateSeconds();
     }
 
-    /**
-     * Returns the current state of the circuit breaker.
-     */
+
     public String getState() {
         return state.get().name();
     }
 
-    /**
-     * Functional interface for operations protected by the circuit breaker.
-     */
+
     @FunctionalInterface
     public interface CircuitBreakerOperation<T> {
         T execute() throws Exception;

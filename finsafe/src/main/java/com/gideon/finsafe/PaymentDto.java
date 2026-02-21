@@ -36,6 +36,7 @@ public class PaymentDto {
     }
 
 
+    @Data
     @Builder
     @NoArgsConstructor
     @AllArgsConstructor

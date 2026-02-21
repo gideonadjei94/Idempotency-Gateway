@@ -30,12 +30,10 @@ public class IdempotencyService {
     private static final int    MAX_POLL_ATTEMPTS = 20;
 
     private final RedisTemplate<String, Object> redisTemplate;
-    private final PaymentService   paymentService;
-    private final ObjectMapper  objectMapper = buildResponseMapper();
+    private final PaymentService paymentService;
     private final CircuitBreakerService circuitBreaker;
     private final IdempotencyPropertiesConfig idempotencyPropertiesConfig;
-
-
+    private final ObjectMapper objectMapper = buildResponseMapper();
 
     public IdempotencyResult processPayment(String idempotencyKey, PaymentDto.PaymentRequest request) {
         String requestHash = HashUtils.hashOf(request);
@@ -58,9 +56,10 @@ public class IdempotencyService {
             return resolveExistingRecord(idempotencyKey, requestHash, existingRecord);
         }
 
-
         return executeAndPersist(idempotencyKey, requestHash, request);
     }
+
+
 
     private IdempotencyResult resolveExistingRecord(
             String idempotencyKey,
@@ -77,6 +76,7 @@ public class IdempotencyService {
         PaymentDto.PaymentResponse cachedResponse = deserializeResponse(record.getResponseBody());
         return new IdempotencyResult(cachedResponse, record.getHttpStatusCode(), true);
     }
+
 
 
     private IdempotencyResult waitForInFlightRequestAndReplay(
@@ -96,7 +96,6 @@ public class IdempotencyService {
                 throw new RequestInFlightException(idempotencyKey);
             }
 
-
             PaymentDto.IdempotencyRecord record = fetchRecord(idempotencyKey);
             if (record != null) {
                 log.info("In-flight request completed for key='{}' on poll attempt {}",
@@ -104,9 +103,8 @@ public class IdempotencyService {
                 return resolveExistingRecord(idempotencyKey, requestHash, record);
             }
 
-            boolean lockStillHeld = Boolean.TRUE.equals(
-                    redisTemplate.hasKey(RedisKeyUtils.lockKey(idempotencyKey))
-            );
+
+            boolean lockStillHeld = checkLockExists(idempotencyKey);
             if (!lockStillHeld) {
                 log.warn("Lock expired without data for key='{}' on attempt {} — re-entering flow",
                         idempotencyKey, attempt);
@@ -129,8 +127,7 @@ public class IdempotencyService {
             int statusCode = HttpStatus.CREATED.value();
 
             persistRecord(idempotencyKey, requestHash, statusCode, response);
-            log.info("Payment persisted for idempotencyKey='{}'",
-                    idempotencyKey);
+            log.info("Payment persisted for idempotencyKey='{}'", idempotencyKey);
 
             return new IdempotencyResult(response, statusCode, false);
 
@@ -141,6 +138,26 @@ public class IdempotencyService {
 
         } finally {
             releaseLock(idempotencyKey);
+        }
+    }
+
+
+
+    private PaymentDto.IdempotencyRecord fetchRecord(String idempotencyKey) {
+        try {
+            return circuitBreaker.execute(() -> {
+                Object raw = redisTemplate.opsForValue().get(RedisKeyUtils.dataKey(idempotencyKey));
+                if (raw == null) return null;
+
+                if (raw instanceof PaymentDto.IdempotencyRecord record) return record;
+                return objectMapper.convertValue(raw, PaymentDto.IdempotencyRecord.class);
+            });
+        } catch (CircuitBreakerOpenException ex) {
+            log.warn("Circuit breaker OPEN - cannot fetch record for key='{}'", idempotencyKey);
+            throw ex;
+        } catch (Exception ex) {
+            log.error("Failed to fetch idempotency record for key='{}'", idempotencyKey, ex);
+            throw new RuntimeException("Failed to check idempotency", ex);
         }
     }
 
@@ -157,6 +174,7 @@ public class IdempotencyService {
                 return result;
             });
         } catch (CircuitBreakerOpenException ex) {
+            log.warn("Circuit breaker OPEN - cannot acquire lock for key='{}'", idempotencyKey);
             throw ex;
         } catch (Exception ex) {
             log.error("Failed to acquire lock for key='{}'", idempotencyKey, ex);
@@ -167,28 +185,37 @@ public class IdempotencyService {
 
 
     private void releaseLock(String idempotencyKey) {
-        redisTemplate.delete(RedisKeyUtils.lockKey(idempotencyKey));
-        log.debug("Lock released for idempotencyKey='{}'", idempotencyKey);
-    }
-
-
-
-    private PaymentDto.IdempotencyRecord fetchRecord(String idempotencyKey) {
         try {
-            return circuitBreaker.execute(() -> {
-                Object raw = redisTemplate.opsForValue().get(RedisKeyUtils.dataKey(idempotencyKey));
-                if (raw == null) return null;
-
-                if (raw instanceof PaymentDto.IdempotencyRecord record) return record;
-                return objectMapper.convertValue(raw, PaymentDto.IdempotencyRecord.class);
+            circuitBreaker.execute(() -> {
+                redisTemplate.delete(RedisKeyUtils.lockKey(idempotencyKey));
+                log.debug("Lock released for idempotencyKey='{}'", idempotencyKey);
+                return null;
             });
         } catch (CircuitBreakerOpenException ex) {
-            throw ex;
+            log.warn("Circuit breaker OPEN - cannot release lock for key='{}'", idempotencyKey);
+            // Don't throw - lock will expire via TTL anyway
         } catch (Exception ex) {
-            log.error("Failed to fetch idempotency record for key='{}'", idempotencyKey, ex);
-            throw new RuntimeException("Failed to check idempotency", ex);
+            log.error("Failed to release lock for key='{}' - lock may be orphaned", idempotencyKey, ex);
+            // Don't throw - we don't want to fail the request just because lock cleanup failed
         }
     }
+
+
+
+    private boolean checkLockExists(String idempotencyKey) {
+        try {
+            return circuitBreaker.execute(() ->
+                    Boolean.TRUE.equals(redisTemplate.hasKey(RedisKeyUtils.lockKey(idempotencyKey)))
+            );
+        } catch (CircuitBreakerOpenException ex) {
+            log.warn("Circuit breaker OPEN - cannot check lock for key='{}'", idempotencyKey);
+            return false;
+        } catch (Exception ex) {
+            log.error("Failed to check lock existence for key='{}'", idempotencyKey, ex);
+            return false;
+        }
+    }
+
 
 
     private void persistRecord(String idempotencyKey, String requestHash,
@@ -211,6 +238,7 @@ public class IdempotencyService {
             });
         } catch (Exception ex) {
             log.error("Failed to persist idempotency record for key='{}'", idempotencyKey, ex);
+            // Don't throw - payment was successful, just won't be idempotent on retry
         }
     }
 
