@@ -1,5 +1,8 @@
 package com.gideon.finsafe.exceptions;
 
+import lombok.Getter;
+
+@Getter
 public class RateLimitExceededException extends RuntimeException {
 
     private final String clientId;
@@ -12,11 +15,4 @@ public class RateLimitExceededException extends RuntimeException {
         this.retryAfterSeconds = retryAfterSeconds;
     }
 
-    public String getClientId() {
-        return clientId;
-    }
-
-    public int getRetryAfterSeconds() {
-        return retryAfterSeconds;
-    }
 }

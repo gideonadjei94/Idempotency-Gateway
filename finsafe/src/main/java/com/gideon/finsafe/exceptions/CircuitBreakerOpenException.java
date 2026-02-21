@@ -1,5 +1,8 @@
 package com.gideon.finsafe.exceptions;
 
+import lombok.Getter;
+
+@Getter
 public class CircuitBreakerOpenException extends RuntimeException {
 
     private final String circuitName;
@@ -9,7 +12,4 @@ public class CircuitBreakerOpenException extends RuntimeException {
         this.circuitName = circuitName;
     }
 
-    public String getCircuitName() {
-        return circuitName;
-    }
 }

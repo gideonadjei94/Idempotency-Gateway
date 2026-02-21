@@ -11,8 +11,8 @@ import org.springframework.stereotype.Component;
 public class CircuitBreakerPropertiesConfig {
 
     private boolean enabled = true;
-    private int failureRateThreshold = 50;
-    private int minimumNumberOfCalls = 5;
+    private int failureRateThreshold = 10;
+    private int minimumNumberOfCalls = 1;
     private int waitDurationInOpenStateSeconds = 60;
     private int permittedNumberOfCallsInHalfOpenState = 3;
     private String failureStrategy = "fail-safe";

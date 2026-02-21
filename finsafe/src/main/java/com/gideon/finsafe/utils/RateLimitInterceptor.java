@@ -1,7 +1,9 @@
 package com.gideon.finsafe.utils;
 
 import com.gideon.finsafe.config.RateLimitPropertiesConfig;
+import com.gideon.finsafe.exceptions.CircuitBreakerOpenException;
 import com.gideon.finsafe.exceptions.RateLimitExceededException;
+import com.gideon.finsafe.service.CircuitBreakerService;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
@@ -24,13 +26,15 @@ public class RateLimitInterceptor implements HandlerInterceptor {
 
     private final RedisTemplate<String, Object> redisTemplate;
     private final RateLimitPropertiesConfig rateLimitProperties;
+    private final CircuitBreakerService circuitBreakerService;
 
     @Override
     public boolean preHandle(HttpServletRequest request,
                              HttpServletResponse response,
-                             Object handler) {
+                             Object handler
+    ) {
 
-        // Skip rate limiting if disabled
+
         if (!rateLimitProperties.isEnabled()) {
             return true;
         }
@@ -39,20 +43,23 @@ public class RateLimitInterceptor implements HandlerInterceptor {
         String rateLimitKey = RATE_LIMIT_KEY_PREFIX + clientId;
 
         try {
-            // Increment counter atomically
-            Long currentCount = redisTemplate.opsForValue().increment(rateLimitKey);
+
+            Long currentCount = circuitBreakerService.execute(() ->
+                redisTemplate.opsForValue().increment(rateLimitKey)
+            );
 
             if (currentCount == null) {
                 log.warn("Redis increment returned null for key={}, allowing request", rateLimitKey);
                 return true;
             }
 
-            // Set TTL on first request in this window
             if (currentCount == 1) {
-                redisTemplate.expire(rateLimitKey, Duration.ofSeconds(rateLimitProperties.getWindowSeconds()));
+                circuitBreakerService.execute(() ->
+                redisTemplate.expire(rateLimitKey, Duration.ofSeconds(rateLimitProperties.getWindowSeconds()))
+                );
             }
 
-            // Add rate limit headers to response
+
             int maxRequests = rateLimitProperties.getMaxRequests();
             long remaining = Math.max(0, maxRequests - currentCount);
             long resetTime = System.currentTimeMillis() / 1000 + rateLimitProperties.getWindowSeconds();
@@ -61,7 +68,7 @@ public class RateLimitInterceptor implements HandlerInterceptor {
             response.setHeader(HEADER_REMAINING, String.valueOf(remaining));
             response.setHeader(HEADER_RESET, String.valueOf(resetTime));
 
-            // Check if limit exceeded
+
             if (currentCount > maxRequests) {
                 log.warn("Rate limit exceeded: clientId={} count={}/{}",
                         clientId, currentCount, maxRequests);
@@ -74,11 +81,9 @@ public class RateLimitInterceptor implements HandlerInterceptor {
 
             return true;
 
-        } catch (RateLimitExceededException ex) {
-            // Re-throw to be caught by exception handler
+        } catch (RateLimitExceededException | CircuitBreakerOpenException ex) {
             throw ex;
-        } catch (Exception ex) {
-            // Redis error - fail open (allow request) to avoid blocking legitimate traffic
+        }catch (Exception ex) {
             log.error("Rate limit check failed due to Redis error, allowing request: clientId={}",
                     clientId, ex);
             return true;

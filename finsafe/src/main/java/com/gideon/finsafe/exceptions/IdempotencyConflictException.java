@@ -1,5 +1,8 @@
 package com.gideon.finsafe.exceptions;
 
+import lombok.Getter;
+
+@Getter
 public class IdempotencyConflictException extends RuntimeException{
 
     private final String idempotencyKey;
@@ -9,7 +12,4 @@ public class IdempotencyConflictException extends RuntimeException{
         this.idempotencyKey = idempotencyKey;
     }
 
-    public String getIdempotencyKey() {
-        return idempotencyKey;
-    }
 }

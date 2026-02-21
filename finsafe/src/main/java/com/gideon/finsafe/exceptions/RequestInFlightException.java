@@ -1,5 +1,8 @@
 package com.gideon.finsafe.exceptions;
 
+import lombok.Getter;
+
+@Getter
 public class RequestInFlightException extends RuntimeException{
 
     private final String idempotencyKey;
@@ -13,7 +16,4 @@ public class RequestInFlightException extends RuntimeException{
     }
 
 
-    public String getIdempotencyKey() {
-        return idempotencyKey;
-    }
 }

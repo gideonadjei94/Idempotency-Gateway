@@ -36,7 +36,6 @@ public class CircuitBreakerService {
 
         State currentState = state.get();
 
-        // Check if we should transition from OPEN to HALF_OPEN
         if (currentState == State.OPEN && shouldAttemptReset()) {
             log.info("Circuit breaker transitioning from OPEN to HALF_OPEN");
             state.set(State.HALF_OPEN);
@@ -44,13 +43,12 @@ public class CircuitBreakerService {
             currentState = State.HALF_OPEN;
         }
 
-        // Reject immediately if circuit is open
         if (currentState == State.OPEN) {
             log.warn("Circuit breaker is OPEN, rejecting request");
             throw new CircuitBreakerOpenException("redis");
         }
 
-        // Limit calls in half-open state
+
         if (currentState == State.HALF_OPEN) {
             int calls = halfOpenCalls.incrementAndGet();
             if (calls > properties.getPermittedNumberOfCallsInHalfOpenState()) {

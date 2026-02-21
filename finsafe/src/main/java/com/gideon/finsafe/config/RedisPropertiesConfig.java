@@ -15,8 +15,4 @@ public class RedisPropertiesConfig {
     private int port = 6379;
     private String password;
     private Duration timeout = Duration.ofMillis(2000);
-
-    public long getTimeoutMillis() {
-        return timeout != null ? timeout.toMillis() : 2000L;
-    }
 }
