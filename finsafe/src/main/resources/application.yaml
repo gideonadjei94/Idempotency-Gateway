@@ -43,4 +43,3 @@ circuit-breaker:
   minimum-number-of-calls: 1
   wait-duration-in-open-state-seconds: 60
   permitted-number-of-calls-in-half-open-state: 3
-  failure-strategy: fail-safe

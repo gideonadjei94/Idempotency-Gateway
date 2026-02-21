@@ -15,5 +15,4 @@ public class CircuitBreakerPropertiesConfig {
     private int minimumNumberOfCalls = 1;
     private int waitDurationInOpenStateSeconds = 60;
     private int permittedNumberOfCallsInHalfOpenState = 3;
-    private String failureStrategy = "fail-safe";
 }
