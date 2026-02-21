@@ -4,13 +4,14 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.gideon.finsafe.PaymentDto;
+import com.gideon.finsafe.config.IdempotencyPropertiesConfig;
+import com.gideon.finsafe.exceptions.CircuitBreakerOpenException;
 import com.gideon.finsafe.exceptions.IdempotencyConflictException;
 import com.gideon.finsafe.exceptions.RequestInFlightException;
 import com.gideon.finsafe.utils.HashUtils;
 import com.gideon.finsafe.utils.RedisKeyUtils;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
@@ -25,22 +26,15 @@ import java.util.concurrent.TimeUnit;
 public class IdempotencyService {
 
     private static final String LOCK_VALUE = "PROCESSING";
-
     private static final long   POLL_INTERVAL_MS  = 300L;
-
     private static final int    MAX_POLL_ATTEMPTS = 20;
 
     private final RedisTemplate<String, Object> redisTemplate;
-    private final PaymentService                paymentService;
-    private final ObjectMapper                  objectMapper = buildResponseMapper();
+    private final PaymentService   paymentService;
+    private final ObjectMapper  objectMapper = buildResponseMapper();
+    private final CircuitBreakerService circuitBreaker;
+    private final IdempotencyPropertiesConfig idempotencyPropertiesConfig;
 
-
-    @Value("${idempotency.key-ttl:3600}")
-    private long keyTtlSeconds;
-
-
-    @Value("${idempotency.lock-ttl:30}")
-    private long lockTtlSeconds;
 
 
     public IdempotencyResult processPayment(String idempotencyKey, PaymentDto.PaymentRequest request) {
@@ -102,7 +96,7 @@ public class IdempotencyService {
                 throw new RequestInFlightException(idempotencyKey);
             }
 
-            // Check if the in-flight request has completed and stored a record
+
             PaymentDto.IdempotencyRecord record = fetchRecord(idempotencyKey);
             if (record != null) {
                 log.info("In-flight request completed for key='{}' on poll attempt {}",
@@ -110,12 +104,10 @@ public class IdempotencyService {
                 return resolveExistingRecord(idempotencyKey, requestHash, record);
             }
 
-            // Check if the lock itself has expired (e.g., the other thread crashed)
             boolean lockStillHeld = Boolean.TRUE.equals(
                     redisTemplate.hasKey(RedisKeyUtils.lockKey(idempotencyKey))
             );
             if (!lockStillHeld) {
-                // Lock expired without data being written — treat as first request
                 log.warn("Lock expired without data for key='{}' on attempt {} — re-entering flow",
                         idempotencyKey, attempt);
                 break;
@@ -148,7 +140,6 @@ public class IdempotencyService {
             throw new RuntimeException("Payment processing was interrupted", ex);
 
         } finally {
-            // Always release the lock — even on exception — to unblock waiting requests
             releaseLock(idempotencyKey);
         }
     }
@@ -156,12 +147,21 @@ public class IdempotencyService {
 
 
     private boolean acquireLock(String idempotencyKey) {
-        String lockKey = RedisKeyUtils.lockKey(idempotencyKey);
-        Boolean acquired = redisTemplate.opsForValue()
-                .setIfAbsent(lockKey, LOCK_VALUE, Duration.ofSeconds(lockTtlSeconds));
-        boolean result = Boolean.TRUE.equals(acquired);
-        log.debug("Lock acquisition for key='{}': {}", idempotencyKey, result ? "SUCCESS" : "FAILED");
-        return result;
+        try {
+            return circuitBreaker.execute(() -> {
+                String lockKey = RedisKeyUtils.lockKey(idempotencyKey);
+                Boolean acquired = redisTemplate.opsForValue()
+                        .setIfAbsent(lockKey, LOCK_VALUE, Duration.ofSeconds(idempotencyPropertiesConfig.getLockTtl()));
+                boolean result = Boolean.TRUE.equals(acquired);
+                log.debug("Lock acquisition for key='{}': {}", idempotencyKey, result ? "SUCCESS" : "FAILED");
+                return result;
+            });
+        } catch (CircuitBreakerOpenException ex) {
+            throw ex;
+        } catch (Exception ex) {
+            log.error("Failed to acquire lock for key='{}'", idempotencyKey, ex);
+            return false;
+        }
     }
 
 
@@ -174,33 +174,44 @@ public class IdempotencyService {
 
 
     private PaymentDto.IdempotencyRecord fetchRecord(String idempotencyKey) {
-        Object raw = redisTemplate.opsForValue().get(RedisKeyUtils.dataKey(idempotencyKey));
-        if (raw == null) return null;
+        try {
+            return circuitBreaker.execute(() -> {
+                Object raw = redisTemplate.opsForValue().get(RedisKeyUtils.dataKey(idempotencyKey));
+                if (raw == null) return null;
 
-        if (raw instanceof PaymentDto.IdempotencyRecord record) return record;
-
-        return objectMapper.convertValue(raw, PaymentDto.IdempotencyRecord.class);
+                if (raw instanceof PaymentDto.IdempotencyRecord record) return record;
+                return objectMapper.convertValue(raw, PaymentDto.IdempotencyRecord.class);
+            });
+        } catch (CircuitBreakerOpenException ex) {
+            throw ex;
+        } catch (Exception ex) {
+            log.error("Failed to fetch idempotency record for key='{}'", idempotencyKey, ex);
+            throw new RuntimeException("Failed to check idempotency", ex);
+        }
     }
 
 
-    private void persistRecord(
-            String idempotencyKey,
-            String requestHash,
-            int httpStatusCode,
-            PaymentDto.PaymentResponse response
-    ) {
-        PaymentDto.IdempotencyRecord record = PaymentDto.IdempotencyRecord.builder()
-                .requestHash(requestHash)
-                .httpStatusCode(httpStatusCode)
-                .responseBody(serializeResponse(response))
-                .createdAt(Instant.now())
-                .build();
+    private void persistRecord(String idempotencyKey, String requestHash,
+                               int httpStatusCode, PaymentDto.PaymentResponse response) {
+        try {
+            circuitBreaker.execute(() -> {
+                PaymentDto.IdempotencyRecord record = PaymentDto.IdempotencyRecord.builder()
+                        .requestHash(requestHash)
+                        .httpStatusCode(httpStatusCode)
+                        .responseBody(serializeResponse(response))
+                        .createdAt(Instant.now())
+                        .build();
 
-        redisTemplate.opsForValue().set(
-                RedisKeyUtils.dataKey(idempotencyKey),
-                record,
-                Duration.ofSeconds(keyTtlSeconds)
-        );
+                redisTemplate.opsForValue().set(
+                        RedisKeyUtils.dataKey(idempotencyKey),
+                        record,
+                        Duration.ofSeconds(idempotencyPropertiesConfig.getKeyTtl())
+                );
+                return null;
+            });
+        } catch (Exception ex) {
+            log.error("Failed to persist idempotency record for key='{}'", idempotencyKey, ex);
+        }
     }
 
 

@@ -1,6 +1,8 @@
 package com.gideon.finsafe.service;
 
 import com.gideon.finsafe.PaymentDto;
+import com.gideon.finsafe.config.IdempotencyPropertiesConfig;
+import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
@@ -10,15 +12,11 @@ import java.util.UUID;
 
 @Slf4j
 @Service
+@RequiredArgsConstructor
 public class PaymentService {
 
-    /**
-     * Configurable delay in milliseconds that simulates the time a real payment
-     * gateway call would take. Sourced from {@code idempotency.processing-delay}
-     * in {@code application.yml} (default: 2000 ms).
-     */
-    @Value("${idempotency.processing-delay:2000}")
-    private long processingDelayMs;
+  private final IdempotencyPropertiesConfig idempotencyPropertiesConfig;
+
 
     public PaymentDto.PaymentResponse process(PaymentDto.PaymentRequest request) throws InterruptedException {
         log.info("Processing payment: amount={} currency={}",
@@ -44,9 +42,9 @@ public class PaymentService {
 
 
     private void simulateProcessingDelay() throws InterruptedException {
-        log.debug("Simulating payment gateway delay of {}ms", processingDelayMs);
+        log.debug("Simulating payment gateway delay of {}ms", idempotencyPropertiesConfig.getProcessingDelay());
         try {
-            Thread.sleep(processingDelayMs);
+            Thread.sleep(idempotencyPropertiesConfig.getProcessingDelay());
         } catch (InterruptedException ex) {
             Thread.currentThread().interrupt();
             throw ex;

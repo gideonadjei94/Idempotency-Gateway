@@ -23,7 +23,6 @@ public class PaymentDto {
 
         @NotNull(message = "Amount is required")
         @DecimalMin(value = "0.01", inclusive = true, message = "Amount must be greater than 0")
-        @DecimalMax(value = "1000000.00", inclusive = true, message = "Amount must not exceed 1,000,000.00")
         @Digits(integer = 7, fraction = 2, message = "Amount must have at most 2 decimal places")
         private BigDecimal amount;
 

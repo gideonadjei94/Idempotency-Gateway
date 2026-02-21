@@ -3,6 +3,7 @@ package com.gideon.finsafe.exceptions;
 import com.gideon.finsafe.PaymentDto;
 import jakarta.servlet.http.HttpServletRequest;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.MethodArgumentNotValidException;
@@ -24,10 +25,50 @@ public class GlobalExceptionHandler {
     ) {
         log.warn("Idempotency conflict for key='{}': {}", ex.getIdempotencyKey(), ex.getMessage());
 
-        return ResponseEntity.status(HttpStatus.UNPROCESSABLE_ENTITY)
+        return ResponseEntity.status(HttpStatus.CONFLICT)
                 .body(buildError(
-                        HttpStatus.UNPROCESSABLE_ENTITY,
+                        HttpStatus.CONFLICT,
                         ex.getMessage(),
+                        request.getRequestURI(),
+                        null
+                ));
+    }
+
+
+
+    @ExceptionHandler(RateLimitExceededException.class)
+    public ResponseEntity<PaymentDto.ErrorResponse> handleRateLimitExceeded(
+            RateLimitExceededException ex,
+            HttpServletRequest request
+    ) {
+        log.warn("Rate limit exceeded for client='{}': {}", ex.getClientId(), ex.getMessage());
+
+        HttpHeaders headers = new HttpHeaders();
+        headers.add("Retry-After", String.valueOf(ex.getRetryAfterSeconds()));
+
+        return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS)
+                .headers(headers)
+                .body(buildError(
+                        HttpStatus.TOO_MANY_REQUESTS,
+                        ex.getMessage(),
+                        request.getRequestURI(),
+                        null
+                ));
+    }
+
+
+
+    @ExceptionHandler(CircuitBreakerOpenException.class)
+    public ResponseEntity<PaymentDto.ErrorResponse> handleCircuitBreakerOpen(
+            CircuitBreakerOpenException ex,
+            HttpServletRequest request
+    ) {
+        log.error("Circuit breaker is OPEN for '{}': {}", ex.getCircuitName(), ex.getMessage());
+
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                .body(buildError(
+                        HttpStatus.SERVICE_UNAVAILABLE,
+                        "Service temporarily unavailable. Please retry in a few moments.",
                         request.getRequestURI(),
                         null
                 ));
